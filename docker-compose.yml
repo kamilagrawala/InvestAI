@@ -30,6 +30,7 @@ services:
       - RABBITMQ_PASS=${RABBITMQ_PASS}
       - RABBITMQ_MASTER_KEY=${RABBITMQ_MASTER_KEY}
       - REDIS_HOST=redis
+      - LLM_PROVIDER=${LLM_PROVIDER:-fake}
     restart: always
     extra_hosts:
       - "host.docker.internal:192.168.1.75"
