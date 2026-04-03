@@ -3,3 +3,4 @@ langchain
 langchain-community
 cryptography
 redis
+langchain-google-genai
