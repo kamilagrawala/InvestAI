@@ -4,19 +4,36 @@ services:
     build: .
     environment:
       - RABBITMQ_HOST=host.docker.internal
-      - RABBITMQ_USER=admin
-      - RABBITMQ_PASS=password
+      - RABBITMQ_USER=${RABBITMQ_USER}
+      - RABBITMQ_PASS=${RABBITMQ_PASS}
+      - RABBITMQ_MASTER_KEY=${RABBITMQ_MASTER_KEY}
     restart: always
     extra_hosts:
       - "host.docker.internal:192.168.1.75"
 
   audit_agent:
     build: .
-    command: ["python", "-u", "day_trader_agent.py"]
+    command: ["python", "-u", "audit_agent.py"]
     environment:
       - RABBITMQ_HOST=host.docker.internal
-      - RABBITMQ_USER=admin
-      - RABBITMQ_PASS=password
+      - RABBITMQ_USER=${RABBITMQ_USER}
+      - RABBITMQ_PASS=${RABBITMQ_PASS}
+      - RABBITMQ_MASTER_KEY=${RABBITMQ_MASTER_KEY}
+    restart: always
+    extra_hosts:
+      - "host.docker.internal:192.168.1.75"
+
+  notification_agent:
+    build: .
+    command: ["python", "-u", "notification_agent.py"]
+    environment:
+      - RABBITMQ_HOST=host.docker.internal
+      - RABBITMQ_USER=${RABBITMQ_USER}
+      - RABBITMQ_PASS=${RABBITMQ_PASS}
+      - RABBITMQ_MASTER_KEY=${RABBITMQ_MASTER_KEY}
+      - GOOGLE_MASTER_KEY=${GOOGLE_MASTER_KEY}
+      - EMAIL_USER=${EMAIL_USER}
+      - EMAIL_PASS=${EMAIL_PASS}
     restart: always
     extra_hosts:
       - "host.docker.internal:192.168.1.75"

@@ -2,10 +2,32 @@ import pika
 import json
 from datetime import datetime
 import sys
+import os
+from crypto_utils import decrypt_string
 
 def send_trades_on_connection(count=50):
     try:
-        credentials = pika.PlainCredentials('admin', 'password')
+        rabbitmq_user_raw = os.getenv('RABBITMQ_USER', 'admin')
+        rabbitmq_pass_raw = os.getenv('RABBITMQ_PASS', 'password')
+        
+        # Decrypt credentials if they look like encrypted strings
+        try:
+            # Decrypt User
+            if len(rabbitmq_user_raw) > 50:
+                rabbitmq_user = decrypt_string(rabbitmq_user_raw, env_name="RABBITMQ_MASTER_KEY")
+            else:
+                rabbitmq_user = rabbitmq_user_raw
+                
+            # Decrypt Password
+            if len(rabbitmq_pass_raw) > 50:
+                rabbitmq_pass = decrypt_string(rabbitmq_pass_raw, env_name="RABBITMQ_MASTER_KEY")
+            else:
+                rabbitmq_pass = rabbitmq_pass_raw
+        except Exception:
+            rabbitmq_user = rabbitmq_user_raw
+            rabbitmq_pass = rabbitmq_pass_raw
+
+        credentials = pika.PlainCredentials(rabbitmq_user, rabbitmq_pass)
         connection = pika.BlockingConnection(pika.ConnectionParameters('localhost', credentials=credentials))
         channel = connection.channel()
 

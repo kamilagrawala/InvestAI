@@ -2,6 +2,7 @@ import pika
 import json
 import logging
 import os
+from crypto_utils import decrypt_string
 from datetime import datetime
 from collections import defaultdict
 from langchain.prompts import PromptTemplate
@@ -15,9 +16,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("AuditAgent")
 
-class DayTraderAgent:
+class AuditAgent:
     def __init__(self):
-        # State: trades[account_number][ticker][date] = count
+        # State: trade_history[account_number][ticker][date_str] = count
+        # This nested defaultdict automatically initializes missing levels on the fly, 
+        # allowing us to increment counts without manual 'if key exists' checks.
         self.trade_history = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
         
         # Setup a simple LangChain logic (using Fake LLM for now)
@@ -53,35 +56,72 @@ class DayTraderAgent:
             logger.warning(f"!!! ALERT !!! Account {account} flagged. Pattern: {count} trades for {ticker} on {date_str}.")
             logger.warning(f"Agent Analysis: {analysis}")
 
+            # NEW: Publish to notification queue
+            notification_event = {
+                "event_type": "DAY_TRADER_ALERT",
+                "account_number": account,
+                "ticker": ticker,
+                "trade_count": count,
+                "timestamp": datetime.now().isoformat(),
+                "details": analysis
+            }
+            self.channel.basic_publish(
+                exchange='amq.direct',
+                routing_key='notifications',
+                body=json.dumps(notification_event),
+                properties=pika.BasicProperties(delivery_mode=2)
+            )
+            logger.info(f"Published notification event for {account}")
+
     def start(self):
         rabbitmq_host = os.getenv('RABBITMQ_HOST', 'localhost')
-        rabbitmq_user = os.getenv('RABBITMQ_USER', 'admin')
-        rabbitmq_pass = os.getenv('RABBITMQ_PASS', 'password')
+        rabbitmq_user_raw = os.getenv('RABBITMQ_USER', 'admin')
+        rabbitmq_pass_raw = os.getenv('RABBITMQ_PASS', 'password')
         
+        # Decrypt credentials if they look like encrypted strings
+        try:
+            # Decrypt User
+            if len(rabbitmq_user_raw) > 50:
+                rabbitmq_user = decrypt_string(rabbitmq_user_raw, env_name="RABBITMQ_MASTER_KEY")
+            else:
+                rabbitmq_user = rabbitmq_user_raw
+                
+            # Decrypt Password
+            if len(rabbitmq_pass_raw) > 50:
+                rabbitmq_pass = decrypt_string(rabbitmq_pass_raw, env_name="RABBITMQ_MASTER_KEY")
+            else:
+                rabbitmq_pass = rabbitmq_pass_raw
+        except Exception:
+            rabbitmq_user = rabbitmq_user_raw
+            rabbitmq_pass = rabbitmq_pass_raw
+
         credentials = pika.PlainCredentials(rabbitmq_user, rabbitmq_pass)
         connection = pika.BlockingConnection(pika.ConnectionParameters(
             host=rabbitmq_host,
             credentials=credentials
         ))
-        channel = connection.channel()
+        self.channel = connection.channel()
 
         # Create a dedicated queue for the audit agent
-        channel.queue_declare(queue='audit_trades', durable=True)
+        self.channel.queue_declare(queue='audit_trades', durable=True)
         
         # Bind it to the SAME exchange and routing key as the main consumers
-        # This creates a "copy" of the message for the agent (Fanout-like behavior with direct exchange)
-        channel.queue_bind(exchange='amq.direct', queue='audit_trades', routing_key='stock_trades')
+        self.channel.queue_bind(exchange='amq.direct', queue='audit_trades', routing_key='stock_trades')
+
+        # NEW: Ensure the notifications queue exists
+        self.channel.queue_declare(queue='notifications', durable=True)
+        self.channel.queue_bind(exchange='amq.direct', queue='notifications', routing_key='notifications')
 
         def callback(ch, method, properties, body):
             trade_data = json.loads(body)
             self.process_trade(trade_data)
             ch.basic_ack(delivery_tag=method.delivery_tag)
 
-        channel.basic_consume(queue='audit_trades', on_message_callback=callback)
+        self.channel.basic_consume(queue='audit_trades', on_message_callback=callback)
         
         logger.info(f"Audit Agent active. Monitoring trades via audit_trades queue...")
-        channel.start_consuming()
+        self.channel.start_consuming()
 
 if __name__ == "__main__":
-    agent = DayTraderAgent()
+    agent = AuditAgent()
     agent.start()

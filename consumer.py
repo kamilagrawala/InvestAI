@@ -4,6 +4,7 @@ import logging
 import time
 import sys
 import os
+from crypto_utils import decrypt_string
 
 # Configure logging
 logging.basicConfig(
@@ -38,9 +39,28 @@ def callback(ch, method, properties, body):
 def main():
     # Use environment variables for RabbitMQ configuration
     rabbitmq_host = os.getenv('RABBITMQ_HOST', 'localhost')
-    rabbitmq_user = os.getenv('RABBITMQ_USER', 'guest')
-    rabbitmq_pass = os.getenv('RABBITMQ_PASS', 'guest')
+    rabbitmq_user_raw = os.getenv('RABBITMQ_USER', 'guest')
+    rabbitmq_pass_raw = os.getenv('RABBITMQ_PASS', 'guest')
     
+    # Decrypt credentials if they look like encrypted strings
+    try:
+        # Decrypt User
+        if len(rabbitmq_user_raw) > 50:
+            rabbitmq_user = decrypt_string(rabbitmq_user_raw, env_name="RABBITMQ_MASTER_KEY")
+        else:
+            rabbitmq_user = rabbitmq_user_raw
+            
+        # Decrypt Password
+        if len(rabbitmq_pass_raw) > 50:
+            rabbitmq_pass = decrypt_string(rabbitmq_pass_raw, env_name="RABBITMQ_MASTER_KEY")
+        else:
+            rabbitmq_pass = rabbitmq_pass_raw
+            
+    except Exception as e:
+        logger.error(f"Failed to decrypt RabbitMQ credentials: {e}")
+        rabbitmq_user = rabbitmq_user_raw
+        rabbitmq_pass = rabbitmq_pass_raw
+
     credentials = pika.PlainCredentials(rabbitmq_user, rabbitmq_pass)
     
     while True:
