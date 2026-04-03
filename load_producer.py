@@ -5,8 +5,9 @@ import sys
 import os
 from crypto_utils import decrypt_string
 
-def send_trades_on_connection(count=50):
+def send_trades_on_connection(count=50, instance_id=1):
     try:
+        # ... existing decryption and connection setup ...
         rabbitmq_user_raw = os.getenv('RABBITMQ_USER', 'admin')
         rabbitmq_pass_raw = os.getenv('RABBITMQ_PASS', 'password')
         
@@ -34,17 +35,31 @@ def send_trades_on_connection(count=50):
         channel.queue_declare(queue='stock_trades', durable=True)
         channel.queue_bind(exchange='amq.direct', queue='stock_trades', routing_key='stock_trades')
 
-        print(f"[{datetime.now().isoformat()}] Starting to send {count} trades...")
         import random
+        print(f"[{datetime.now().isoformat()}] [Producer-{instance_id}] Starting to send {count} trades...")
+        
         for i in range(count):
+            account_idx = i % 5
+            account = f'ACC_{account_idx}'
+            
+            # Precise constraint: Max 2 trades total for ACC_3 and ACC_4 per producer
+            if account_idx == 3 and i >= 15: # ACC_3 appears at 3, 8, 13... so 15 stops it after 3 trades
+                continue
+            if account_idx == 4 and i >= 15:
+                continue
+            
+            # To get exactly 2 trades for 3 and 4 as requested:
+            if account_idx >= 3 and i >= 10:
+                continue
+
             action = random.choice(['BUY', 'SELL'])
             trade_data = {
                 'Ticker': 'LOAD',
                 'Price': 100.0 + (i % 100),
                 'Action': action,
                 'Date': datetime.now().isoformat(),
-                'Account Number': f'ACC_{i % 5}', # Reusing accounts to trigger day trader logic
-                'TradeID': i
+                'Account Number': account,
+                'TradeID': f"P{instance_id}-{i}" # Unique Trade ID per producer
             }
 
             message = json.dumps(trade_data)
@@ -58,22 +73,22 @@ def send_trades_on_connection(count=50):
                     delivery_mode=2, 
                 ))
             
-            # Print every 10 for smaller batches, or every 1000 for large ones
-            if count <= 100 or i % 1000 == 0 or i == count - 1:
-                print(f"[{send_ts}] [x] Sent TradeID: {i}")
+            if count <= 100 or i % 1000 == 0:
+                print(f"[{send_ts}] [Producer-{instance_id}] [x] Sent TradeID: {trade_data['TradeID']}")
                 sys.stdout.flush()
         
         connection.close()
-        print(f"[{datetime.now().isoformat()}] Finished sending {count} trades.")
+        print(f"[{datetime.now().isoformat()}] [Producer-{instance_id}] Finished.")
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error in Producer-{instance_id}: {e}")
 
 if __name__ == "__main__":
-    # Allow count to be passed as an argument
+    # Usage: python load_producer.py <count> <instance_id>
     trade_count = 50
+    p_id = 1
     if len(sys.argv) > 1:
-        try:
-            trade_count = int(sys.argv[1])
-        except ValueError:
-            pass
-    send_trades_on_connection(trade_count)
+        trade_count = int(sys.argv[1])
+    if len(sys.argv) > 2:
+        p_id = int(sys.argv[2])
+        
+    send_trades_on_connection(trade_count, p_id)

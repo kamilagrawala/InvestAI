@@ -114,66 +114,64 @@ class NotificationAgent:
                     self._handle_throttle_expiry(account)
 
     def _handle_throttle_expiry(self, account):
-        """Triggered immediately when a 60s window closes."""
+        """Triggered when a 60s accumulation window closes."""
         try:
-            # Check if there is a pending update for this account
             pending_data_key = f"pending_event_data:{account}"
+            last_count_key = f"last_reported_count:{account}"
             event_data_json = self.redis.get(pending_data_key)
-            
+
             if event_data_json:
-                logger.info(f" [EVENT] Cooldown expired for {account}. Sending final summary...")
                 event = json.loads(event_data_json)
-                
-                # Send the final update
-                for channel in self.channels:
-                    try:
-                        channel.send(event)
-                    except Exception as e:
-                        logger.error(f"Failed to send final notification: {e}")
-                
-                # Update last reported count and cleanup
-                self.redis.set(f"last_reported_count:{account}", event.get('trade_count'))
+                current_count = event.get('trade_count')
+                last_count = self.redis.get(last_count_key)
+
+                # Only send if the count has changed since our last email
+                if not last_count or int(last_count) != current_count:
+                    logger.info(f" [HEARTBEAT] Window closed for {account}. Sending summary (Count: {current_count})...")
+                    for channel in self.channels:
+                        try:
+                            channel.send(event)
+                        except Exception as e:
+                            logger.error(f"Failed to send summary notification: {e}")
+
+                    # Update the record of what we last sent
+                    self.redis.set(last_count_key, current_count)
+
+                    # IMPORTANT: If activity is continuous, we could start a new window here.
+                    # But per your requirement "send out the final count no matter what", 
+                    # the next incoming trade will simply restart the window if needed.
+                else:
+                    logger.info(f" [SKIP] Window closed for {account} but count {current_count} already reported.")
+
+                # Cleanup buffer
                 self.redis.delete(pending_data_key)
-                
+
         except Exception as e:
-            logger.error(f"Error handling throttle expiry for {account}: {e}")
+            logger.error(f"Error handling heartbeat expiry for {account}: {e}")
+
 
     def dispatch(self, event):
-        # Throttling logic for notifications
+        # Heartbeat logic for notifications
         account = event.get('account_number')
         current_count = event.get('trade_count', 0)
         
         # Keys for Redis
         throttle_key = f"email_throttle:{account}"
-        last_count_key = f"last_reported_count:{account}"
         pending_data_key = f"pending_event_data:{account}"
+        last_reported_count_key = f"last_reported_count:{account}"
         
-        is_throttled = self.redis.get(throttle_key)
-        last_reported_count = self.redis.get(last_count_key)
+        # 1. Update the latest data for this account (Buffer)
+        self.redis.set(pending_data_key, json.dumps(event))
         
-        if is_throttled:
-            # Update pending data so the Event Listener sends the latest state when window closes
-            self.redis.set(pending_data_key, json.dumps(event))
-            logger.info(f" [THROTTLED] Event for {account} saved as PENDING (Final count will be {current_count}).")
-            return
-
-        # If window is open, only send if the count has changed
-        if last_reported_count and int(last_reported_count) == current_count:
-            logger.info(f" [SKIP] No change in trade count ({current_count}) for {account}. Notification suppressed.")
-            return
-
-        # Send through all active channels
-        for channel in self.channels:
-            try:
-                channel.send(event)
-            except Exception as e:
-                logger.error(f"Failed to send notification via {channel.__class__.__name__}: {e}")
-        
-        # Set 60s throttle window and update last reported count
-        self.redis.setex(throttle_key, self.throttle_seconds, "active")
-        self.redis.set(last_count_key, current_count)
-        # Cleanup any pending data since we just sent a fresh update
-        self.redis.delete(pending_data_key)
+        # 2. Check if a heartbeat window is already active
+        if not self.redis.get(throttle_key):
+            # If no window active, start one now
+            # This timer will trigger the email when it expires
+            self.redis.setex(throttle_key, self.throttle_seconds, "active")
+            logger.info(f" [HEARTBEAT] Started 60s accumulation window for {account}.")
+        else:
+            # Window is already running, just update the buffer
+            logger.info(f" [BUFFERED] Updated latest count to {current_count} for {account}.")
 
     def start(self):
         rabbitmq_host = os.getenv('RABBITMQ_HOST', 'localhost')
