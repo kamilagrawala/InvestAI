@@ -1,0 +1,24 @@
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Logs
+*.log
+nohup.out
+
+# Docker
+.docker/
+
+# IDEs
+.idea/
+.vscode/
+
+# Security (Future-proofing)
+.env
+master.key

@@ -1,0 +1,22 @@
+version: '3.7'
+services:
+  consumer:
+    build: .
+    environment:
+      - RABBITMQ_HOST=host.docker.internal
+      - RABBITMQ_USER=admin
+      - RABBITMQ_PASS=password
+    restart: always
+    extra_hosts:
+      - "host.docker.internal:192.168.1.75"
+
+  audit_agent:
+    build: .
+    command: ["python", "-u", "day_trader_agent.py"]
+    environment:
+      - RABBITMQ_HOST=host.docker.internal
+      - RABBITMQ_USER=admin
+      - RABBITMQ_PASS=password
+    restart: always
+    extra_hosts:
+      - "host.docker.internal:192.168.1.75"
