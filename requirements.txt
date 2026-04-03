@@ -2,3 +2,4 @@ pika
 langchain
 langchain-community
 cryptography
+redis

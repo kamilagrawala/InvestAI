@@ -2,6 +2,7 @@ import pika
 import json
 import logging
 import os
+import redis
 from crypto_utils import decrypt_string
 from datetime import datetime
 from collections import defaultdict
@@ -18,11 +19,10 @@ logger = logging.getLogger("AuditAgent")
 
 class AuditAgent:
     def __init__(self):
-        # State: trade_history[account_number][ticker][date_str] = count
-        # This nested defaultdict automatically initializes missing levels on the fly, 
-        # allowing us to increment counts without manual 'if key exists' checks.
-        self.trade_history = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
-        
+        # Redis setup for shared state across agents
+        redis_host = os.getenv("REDIS_HOST", "localhost")
+        self.redis = redis.Redis(host=redis_host, port=6379, db=0, decode_responses=True)
+
         # Setup a simple LangChain logic (using Fake LLM for now)
         # In production, this would use an LLM to analyze complex patterns
         self.prompt = PromptTemplate.from_template(
@@ -38,9 +38,16 @@ class AuditAgent:
         action = trade_data.get('Action')
         date_str = trade_data.get('Date', '').split('T')[0] # Get YYYY-MM-DD
         
-        # Track the trade
-        self.trade_history[account][ticker][date_str] += 1
-        count = self.trade_history[account][ticker][date_str]
+        # Redis key for this specific account, stock, and day
+        # Format: trades:ACC_1:AAPL:2026-04-03
+        count_key = f"trades:{account}:{ticker}:{date_str}"
+        
+        # Increment the shared counter in Redis (Atomic operation)
+        count = self.redis.incr(count_key)
+        
+        # Ensure the key expires after 24 hours to keep Redis clean
+        if count == 1:
+            self.redis.expire(count_key, 86400)
         
         # Day Trader Detection Logic: 
         # Pattern: Same account, same stock, multiple times in one day

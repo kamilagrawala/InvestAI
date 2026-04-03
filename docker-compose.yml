@@ -1,5 +1,12 @@
 version: '3.7'
 services:
+  redis:
+    image: redis:5-alpine
+    container_name: investai_cache
+    ports:
+      - "6379:6379"
+    restart: always
+
   consumer:
     build: .
     environment:
@@ -7,6 +14,7 @@ services:
       - RABBITMQ_USER=${RABBITMQ_USER}
       - RABBITMQ_PASS=${RABBITMQ_PASS}
       - RABBITMQ_MASTER_KEY=${RABBITMQ_MASTER_KEY}
+      - REDIS_HOST=redis
     restart: always
     extra_hosts:
       - "host.docker.internal:192.168.1.75"
@@ -14,11 +22,14 @@ services:
   audit_agent:
     build: .
     command: ["python", "-u", "audit_agent.py"]
+    depends_on:
+      - redis
     environment:
       - RABBITMQ_HOST=host.docker.internal
       - RABBITMQ_USER=${RABBITMQ_USER}
       - RABBITMQ_PASS=${RABBITMQ_PASS}
       - RABBITMQ_MASTER_KEY=${RABBITMQ_MASTER_KEY}
+      - REDIS_HOST=redis
     restart: always
     extra_hosts:
       - "host.docker.internal:192.168.1.75"
@@ -26,6 +37,8 @@ services:
   notification_agent:
     build: .
     command: ["python", "-u", "notification_agent.py"]
+    depends_on:
+      - redis
     environment:
       - RABBITMQ_HOST=host.docker.internal
       - RABBITMQ_USER=${RABBITMQ_USER}
@@ -34,6 +47,7 @@ services:
       - GOOGLE_MASTER_KEY=${GOOGLE_MASTER_KEY}
       - EMAIL_USER=${EMAIL_USER}
       - EMAIL_PASS=${EMAIL_PASS}
+      - REDIS_HOST=redis
     restart: always
     extra_hosts:
       - "host.docker.internal:192.168.1.75"
