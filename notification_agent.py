@@ -84,46 +84,59 @@ class NotificationAgent:
             except Exception as e:
                 logger.error(f"Failed to initialize email channel: {e}")
 
-        # Start the background Watchdog to send final updates
-        self.watchdog_thread = threading.Thread(target=self._watchdog_loop, daemon=True)
-        self.watchdog_thread.start()
+        # Enable Keyspace Notifications in Redis (if not already enabled)
+        # 'Ex' means notify on Expired events
+        try:
+            self.redis.config_set('notify-keyspace-events', 'Ex')
+            logger.info("Redis keyspace notifications enabled (Expired events).")
+        except Exception as e:
+            logger.warning(f"Could not enable Redis keyspace notifications: {e}")
 
-    def _watchdog_loop(self):
-        """Background thread that checks for accounts needing a final summary email."""
-        logger.info("Watchdog background thread started.")
-        while True:
-            try:
-                # Find all accounts that were marked as 'pending'
-                pending_accounts = self.redis.smembers("pending_notifications")
+        # Start the background Expiration Listener (Event-Based)
+        self.listener_thread = threading.Thread(target=self._expiration_listener_loop, daemon=True)
+        self.listener_thread.start()
+
+    def _expiration_listener_loop(self):
+        """Event-based listener that reacts the moment a throttle key expires in Redis."""
+        pubsub = self.redis.pubsub()
+        # Subscribe to the 'expired' event channel for DB 0
+        pubsub.psubscribe("__keyevent@0__:expired")
+        
+        logger.info("Expiration listener thread started. Waiting for Redis events...")
+        
+        for message in pubsub.listen():
+            if message['type'] == 'pmessage':
+                expired_key = message['data']
                 
-                for account in pending_accounts:
-                    throttle_key = f"email_throttle:{account}"
-                    # If the throttle has expired, we can send the final update
-                    if not self.redis.get(throttle_key):
-                        logger.info(f" [WATCHDOG] Cooldown expired for {account}. Sending final summary...")
-                        
-                        # Retrieve last stored event data from Redis
-                        event_data_json = self.redis.get(f"pending_event_data:{account}")
-                        if event_data_json:
-                            event = json.loads(event_data_json)
-                            # Actual dispatch
-                            for channel in self.channels:
-                                try:
-                                    channel.send(event)
-                                except Exception as e:
-                                    logger.error(f"Failed to send notification via {channel.__class__.__name__}: {e}")
-                            
-                            # Update Redis state
-                            self.redis.setex(throttle_key, self.throttle_seconds, "active")
-                            self.redis.set(f"last_reported_count:{account}", event.get('trade_count'))
-                        
-                        # Remove from pending set
-                        self.redis.srem("pending_notifications", account)
-                
-            except Exception as e:
-                logger.error(f"Watchdog error: {e}")
+                # Check if it's one of our throttle keys
+                if expired_key.startswith("email_throttle:"):
+                    account = expired_key.replace("email_throttle:", "")
+                    self._handle_throttle_expiry(account)
+
+    def _handle_throttle_expiry(self, account):
+        """Triggered immediately when a 60s window closes."""
+        try:
+            # Check if there is a pending update for this account
+            pending_data_key = f"pending_event_data:{account}"
+            event_data_json = self.redis.get(pending_data_key)
             
-            time.sleep(5) # Check every 5 seconds
+            if event_data_json:
+                logger.info(f" [EVENT] Cooldown expired for {account}. Sending final summary...")
+                event = json.loads(event_data_json)
+                
+                # Send the final update
+                for channel in self.channels:
+                    try:
+                        channel.send(event)
+                    except Exception as e:
+                        logger.error(f"Failed to send final notification: {e}")
+                
+                # Update last reported count and cleanup
+                self.redis.set(f"last_reported_count:{account}", event.get('trade_count'))
+                self.redis.delete(pending_data_key)
+                
+        except Exception as e:
+            logger.error(f"Error handling throttle expiry for {account}: {e}")
 
     def dispatch(self, event):
         # Throttling logic for notifications
@@ -133,38 +146,34 @@ class NotificationAgent:
         # Keys for Redis
         throttle_key = f"email_throttle:{account}"
         last_count_key = f"last_reported_count:{account}"
-        pending_set_key = "pending_notifications"
         pending_data_key = f"pending_event_data:{account}"
         
         is_throttled = self.redis.get(throttle_key)
         last_reported_count = self.redis.get(last_count_key)
         
         if is_throttled:
-            # Mark as pending so Watchdog can send the final update later
-            self.redis.sadd(pending_set_key, account)
+            # Update pending data so the Event Listener sends the latest state when window closes
             self.redis.set(pending_data_key, json.dumps(event))
-            logger.info(f" [THROTTLED] Event for {account} marked as PENDING (Final count will be {current_count}).")
+            logger.info(f" [THROTTLED] Event for {account} saved as PENDING (Final count will be {current_count}).")
             return
 
-        # If 60s has passed, only send if the count has changed
+        # If window is open, only send if the count has changed
         if last_reported_count and int(last_reported_count) == current_count:
-            # Check if it was pending (unlikely here but for safety)
-            self.redis.srem(pending_set_key, account)
             logger.info(f" [SKIP] No change in trade count ({current_count}) for {account}. Notification suppressed.")
             return
 
-        # Send through all active channels (Log, Email, etc.)
+        # Send through all active channels
         for channel in self.channels:
             try:
                 channel.send(event)
             except Exception as e:
                 logger.error(f"Failed to send notification via {channel.__class__.__name__}: {e}")
         
-        # Update Redis: Set throttle window and update last reported count
+        # Set 60s throttle window and update last reported count
         self.redis.setex(throttle_key, self.throttle_seconds, "active")
         self.redis.set(last_count_key, current_count)
-        # Ensure it's removed from pending since we just sent it
-        self.redis.srem(pending_set_key, account)
+        # Cleanup any pending data since we just sent a fresh update
+        self.redis.delete(pending_data_key)
 
     def start(self):
         rabbitmq_host = os.getenv('RABBITMQ_HOST', 'localhost')
