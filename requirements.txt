@@ -4,3 +4,5 @@ langchain-community
 cryptography
 redis
 langchain-google-genai
+google-genai
+pydantic

@@ -6,9 +6,10 @@ import redis
 import time
 import threading
 from datetime import datetime
+from typing import List, Optional
+from pydantic import BaseModel, Field
 from crypto_utils import decrypt_string
 from langchain.prompts import PromptTemplate
-from langchain_core.output_parsers import StrOutputParser
 from langchain_community.llms import FakeListLLM
 from langchain_google_genai import ChatGoogleGenerativeAI
 
@@ -19,19 +20,32 @@ logging.basicConfig(
 )
 logger = logging.getLogger("AuditAgent")
 
+# --- Structured Output Schema ---
+class FlaggedAccount(BaseModel):
+    account: str = Field(description="The ID of the account being audited")
+    decision: str = Field(description="Either FLAG or PASS")
+    reason: str = Field(description="Brief explanation of the decision")
+
+class AuditReport(BaseModel):
+    flagged_accounts: List[FlaggedAccount] = Field(description="List of accounts that met the PDT criteria")
+
+# --- Agent Implementation ---
 class AuditAgent:
     def __init__(self):
+        # [DEBUG]
+        self.current_provider = os.getenv("LLM_PROVIDER", "NOT_SET")
+        print(f"\n[DEBUG AUDIT] PROVISIONING AGENT WITH PROVIDER: {self.current_provider}\n", flush=True)
+        
         # 1. Redis setup for shared memory
         redis_host = os.getenv("REDIS_HOST", "localhost")
         self.redis = redis.Redis(host=redis_host, port=6379, db=0, decode_responses=True)
         self.history_limit = 20
         self.audit_window_seconds = 60 # Global 60s audit window
         
-        # 2. LLM Factory Setup
-        provider = os.getenv("LLM_PROVIDER", "fake").lower()
-        self.llm = self._get_llm(provider)
+        # 2. LLM Factory Setup (Pure LangChain)
+        self.llm = self._get_llm(self.current_provider)
         
-        # 3. The "Global PDT Expert" Prompt (Batched)
+        # 3. The "Global PDT Expert" Prompt
         self.prompt = PromptTemplate.from_template(
             "SYSTEM: You are a Financial Compliance Officer. Your task is to identify PATTERN DAY TRADERS (PDT).\n"
             "DEFINITION: A Pattern Day Trader executes four or more 'round-trip' trades "
@@ -40,13 +54,16 @@ class AuditAgent:
             "CONTEXT: Here is the recent trade history for multiple accounts:\n"
             "{batch_data}\n\n"
             "ANALYSIS: For each account, analyze if they meet the PDT criteria.\n"
-            "RESPONSE: You MUST respond with a JSON list of flagged accounts only. \n"
-            "Format: [ {{\"account\": \"ACC_ID\", \"decision\": \"FLAG\", \"reason\": \"...\"}}, ... ]\n"
-            "If no accounts are flagged, respond with an empty list: []\n"
         )
-        self.chain = self.prompt | self.llm | StrOutputParser()
+        
+        # Enable Structured Output if using a real model
+        if self.current_provider == "gemini":
+            self.chain = self.prompt | self.llm.with_structured_output(AuditReport)
+        else:
+            # Fallback for FakeLLM which doesn't support with_structured_output
+            self.chain = self.prompt | self.llm
 
-        # 4. Enable Keyspace Notifications for Expiration events
+        # 4. Enable Keyspace Notifications
         try:
             self.redis.config_set('notify-keyspace-events', 'Ex')
             logger.info("Redis keyspace notifications enabled for Global AuditAgent.")
@@ -59,21 +76,27 @@ class AuditAgent:
 
     def _get_llm(self, provider):
         if provider == "fake":
-            # Stubbed response for a batch of accounts
-            return FakeListLLM(responses=[
-                '[{"account": "ACC_0", "decision": "FLAG", "reason": "Meets PDT threshold."}, {"account": "ACC_1", "decision": "FLAG", "reason": "High frequency round-trips."}]',
-                '[]' # No one flagged in next window
-            ])
+            # Realistic stub matching the schema
+            mock_json = {
+                "flagged_accounts": [
+                    {"account": "ACC_0", "decision": "FLAG", "reason": "Meets PDT threshold."},
+                    {"account": "ACC_1", "decision": "FLAG", "reason": "High frequency round-trips."}
+                ]
+            }
+            return FakeListLLM(responses=[json.dumps(mock_json)])
         elif provider == "gemini":
             api_key_raw = os.getenv("GEMINI_API_KEY")
             api_key = decrypt_string(api_key_raw, env_name="GOOGLE_MASTER_KEY")
+            
+            logger.info("Connecting to Gemini via LangChain (gemini-flash-latest)...")
             return ChatGoogleGenerativeAI(
-                model="gemini-2.0-flash",
+                model="gemini-flash-latest",
                 google_api_key=api_key,
                 temperature=0,
-                max_tokens=1024 # Larger tokens for batch response
+                max_tokens=2048,
+                timeout=30
             )
-        return FakeListLLM(responses=["[]"])
+        return FakeListLLM(responses=['{"flagged_accounts": []}'])
 
     def _global_audit_listener(self):
         """Waits for the Global Audit Timer to expire."""
@@ -87,15 +110,41 @@ class AuditAgent:
                 if expired_key == "global_audit_timer":
                     self._perform_batch_ai_audit()
 
+    def _publish_notification(self, notification_event):
+        """Helper to publish notifications using a fresh connection to be thread-safe."""
+        try:
+            rabbitmq_host = os.getenv('RABBITMQ_HOST', 'localhost')
+            rabbitmq_user_raw = os.getenv('RABBITMQ_USER', 'admin')
+            rabbitmq_pass_raw = os.getenv('RABBITMQ_PASS', 'password')
+            
+            try:
+                r_user = decrypt_string(rabbitmq_user_raw, env_name="RABBITMQ_MASTER_KEY") if len(rabbitmq_user_raw) > 50 else rabbitmq_user_raw
+                r_pass = decrypt_string(rabbitmq_pass_raw, env_name="RABBITMQ_MASTER_KEY") if len(rabbitmq_pass_raw) > 50 else rabbitmq_pass_raw
+            except Exception:
+                r_user, r_pass = rabbitmq_user_raw, rabbitmq_pass_raw
+
+            credentials = pika.PlainCredentials(r_user, r_pass)
+            connection = pika.BlockingConnection(pika.ConnectionParameters(host=rabbitmq_host, credentials=credentials))
+            channel = connection.channel()
+            
+            channel.basic_publish(
+                exchange='amq.direct',
+                routing_key='notifications',
+                body=json.dumps(notification_event),
+                properties=pika.BasicProperties(delivery_mode=2)
+            )
+            connection.close()
+            logger.info("Successfully published consolidated notification.")
+        except Exception as e:
+            logger.error(f"Failed to publish notification: {e}")
+
     def _perform_batch_ai_audit(self):
         """Performs a single AI call for all accounts that traded in the last window."""
+        active_provider = os.getenv("LLM_PROVIDER", "unknown")
         try:
-            # 1. Get all accounts that traded
             active_accounts = self.redis.smembers("active_accounts_this_window")
-            if not active_accounts:
-                return
+            if not active_accounts: return
 
-            # 2. Build the batch context
             batch_data = ""
             for account in active_accounts:
                 history_key = f"history:{account}"
@@ -106,32 +155,41 @@ class AuditAgent:
 
             logger.info(f" [GLOBAL AUDIT] Window closed. Analyzing {len(active_accounts)} accounts in ONE call...")
             
-            # 3. Single Intelligence Phase
-            analysis_json = self.chain.invoke({"batch_data": batch_data})
-            
-            # 4. Action Phase: Publish ONE consolidated notification
             try:
-                flagged_accounts = json.loads(analysis_json)
-                if flagged_accounts:
-                    logger.warning(f"!!! GLOBAL ALERT !!! AI flagged {len(flagged_accounts)} accounts.")
+                # Execute LangChain Chain (Real AI returns Pydantic object, Fake returns string)
+                result = self.chain.invoke({"batch_data": batch_data})
+                
+                # Normalize result to dict
+                if hasattr(result, 'model_dump'): # If Pydantic model (Real AI)
+                    flagged_list = result.model_dump().get('flagged_accounts', [])
+                else: # If string (Fake LLM)
+                    flagged_list = json.loads(result).get('flagged_accounts', [])
+                
+                if flagged_list:
+                    logger.warning(f"!!! GLOBAL ALERT !!! AI flagged {len(flagged_list)} accounts.")
+                    print(f"\n[AI REASONING]\n{json.dumps(flagged_list, indent=2)}\n", flush=True)
                     
                     notification_event = {
                         "event_type": "BATCH_PDT_ALERT",
-                        "flagged_accounts": flagged_accounts,
+                        "flagged_accounts": flagged_list,
+                        "provider": active_provider,
                         "timestamp": datetime.now().isoformat()
                     }
-                    self.channel.basic_publish(
-                        exchange='amq.direct',
-                        routing_key='notifications',
-                        body=json.dumps(notification_event),
-                        properties=pika.BasicProperties(delivery_mode=2)
-                    )
+                    print(f"[DEBUG AUDIT] PUBLISHING ALERT WITH PROVIDER: {active_provider}", flush=True)
+                    self._publish_notification(notification_event)
                 else:
                     logger.info("Global Audit: No accounts flagged this window.")
-            except Exception as e:
-                logger.error(f"Failed to parse AI JSON response: {e}. Raw response: {analysis_json}")
 
-            # 5. Cleanup for next window
+            except Exception as e:
+                logger.error(f"LLM Call or Parsing Failed: {e}")
+                notification_event = {
+                    "event_type": "BATCH_PDT_ALERT",
+                    "flagged_accounts": [{"account": "SYSTEM", "decision": "ERROR", "reason": str(e)[:100]}],
+                    "provider": f"ERROR ({active_provider})",
+                    "timestamp": datetime.now().isoformat()
+                }
+                self._publish_notification(notification_event)
+
             self.redis.delete("active_accounts_this_window")
                 
         except Exception as e:
@@ -144,24 +202,20 @@ class AuditAgent:
         trade_id = trade_data.get('TradeID', 'N/A')
         ts = trade_data.get('Date', datetime.now().isoformat())
         
-        # 1. Update Memory
         history_key = f"history:{account}"
         trade_entry = f"{ts} | {action} | {ticker} | ID:{trade_id}"
         self.redis.rpush(history_key, trade_entry)
         self.redis.ltrim(history_key, -self.history_limit, -1)
         self.redis.expire(history_key, 604800)
 
-        # 2. Track account in current window
         self.redis.sadd("active_accounts_this_window", account)
 
-        # 3. Check/Start Global Timer
         timer_key = "global_audit_timer"
         if not self.redis.get(timer_key):
             self.redis.setex(timer_key, self.audit_window_seconds, "active")
             logger.info(f" [GLOBAL AUDIT] Started 60s global window.")
 
     def start(self):
-        # RabbitMQ setup logic (same as before)
         rabbitmq_host = os.getenv('RABBITMQ_HOST', 'localhost')
         rabbitmq_user_raw = os.getenv('RABBITMQ_USER', 'admin')
         rabbitmq_pass_raw = os.getenv('RABBITMQ_PASS', 'password')
@@ -187,7 +241,7 @@ class AuditAgent:
             ch.basic_ack(delivery_tag=method.delivery_tag)
 
         self.channel.basic_consume(queue='audit_trades', on_message_callback=callback)
-        logger.info(f"Global PDT Audit Agent active.")
+        logger.info(f"Global PDT Audit Agent active. Provider: {self.current_provider}")
         self.channel.start_consuming()
 
 if __name__ == "__main__":

@@ -1,0 +1,42 @@
+[
+  {
+    "account": "ACC_4",
+    "action": "BUY",
+    "ticker": "GOOGL"
+  },
+  {
+    "account": "ACC_4",
+    "action": "SELL",
+    "ticker": "GOOGL"
+  },
+  {
+    "account": "ACC_4",
+    "action": "BUY",
+    "ticker": "GOOGL"
+  },
+  {
+    "account": "ACC_4",
+    "action": "BUY",
+    "ticker": "GOOGL"
+  },
+  {
+    "account": "ACC_4",
+    "action": "SELL",
+    "ticker": "GOOGL"
+  },
+  {
+    "account": "ACC_4",
+    "action": "SELL",
+    "ticker": "GOOGL"
+  },
+  {
+    "account": "ACC_4",
+    "action": "SELL",
+    "ticker": "GOOGL"
+  },
+  {
+    "account": "ACC_4",
+    "action": "BUY",
+    "ticker": "GOOGL"
+  }
+]

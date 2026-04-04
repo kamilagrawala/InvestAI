@@ -14,7 +14,6 @@ COPY *.py ./
 # Environment variable for RabbitMQ host (defaults to 'rabbitmq')
 ENV RABBITMQ_HOST=rabbitmq
 ENV RABBITMQ_USER=admin
-# This is the encrypted version of 'password'
 ENV RABBITMQ_PASS=gAAAAABpz9Kay8WWKyW2XdJW6SD1k2U7dbxuyd_dyC-CbzvMSZpcehzc1TGadCcYlsQPOw0J_iZK8NlMuLDqMwYIPPil-F9M9A==
 
 # Run the consumer

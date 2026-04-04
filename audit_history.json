@@ -1,0 +1,170 @@
+[
+  {
+    "Ticker": "NVDA",
+    "Price": 100.0,
+    "Action": "BUY",
+    "Date": "2026-04-04T16:47:08.540085",
+    "Account Number": "ACC_0",
+    "TradeID": "FINAL-0"
+  },
+  {
+    "Ticker": "NVDA",
+    "Price": 101.0,
+    "Action": "SELL",
+    "Date": "2026-04-04T16:47:08.540565",
+    "Account Number": "ACC_0",
+    "TradeID": "FINAL-1"
+  },
+  {
+    "Ticker": "NVDA",
+    "Price": 102.0,
+    "Action": "BUY",
+    "Date": "2026-04-04T16:47:08.540899",
+    "Account Number": "ACC_0",
+    "TradeID": "FINAL-2"
+  },
+  {
+    "Ticker": "NVDA",
+    "Price": 103.0,
+    "Action": "SELL",
+    "Date": "2026-04-04T16:47:08.541446",
+    "Account Number": "ACC_0",
+    "TradeID": "FINAL-3"
+  },
+  {
+    "Ticker": "NVDA",
+    "Price": 104.0,
+    "Action": "BUY",
+    "Date": "2026-04-04T16:47:08.541729",
+    "Account Number": "ACC_0",
+    "TradeID": "FINAL-4"
+  },
+  {
+    "Ticker": "NVDA",
+    "Price": 105.0,
+    "Action": "SELL",
+    "Date": "2026-04-04T16:47:08.542148",
+    "Account Number": "ACC_0",
+    "TradeID": "FINAL-5"
+  },
+  {
+    "Ticker": "NVDA",
+    "Price": 106.0,
+    "Action": "BUY",
+    "Date": "2026-04-04T16:47:08.542528",
+    "Account Number": "ACC_0",
+    "TradeID": "FINAL-6"
+  },
+  {
+    "Ticker": "NVDA",
+    "Price": 107.0,
+    "Action": "SELL",
+    "Date": "2026-04-04T16:47:08.542816",
+    "Account Number": "ACC_0",
+    "TradeID": "FINAL-7"
+  },
+  {
+    "Ticker": "NVDA",
+    "Price": 108.0,
+    "Action": "BUY",
+    "Date": "2026-04-04T16:47:08.543212",
+    "Account Number": "ACC_1",
+    "TradeID": "FINAL-8"
+  },
+  {
+    "Ticker": "NVDA",
+    "Price": 109.0,
+    "Action": "SELL",
+    "Date": "2026-04-04T16:47:08.543515",
+    "Account Number": "ACC_1",
+    "TradeID": "FINAL-9"
+  },
+  {
+    "Ticker": "NVDA",
+    "Price": 110.0,
+    "Action": "BUY",
+    "Date": "2026-04-04T16:47:08.543783",
+    "Account Number": "ACC_1",
+    "TradeID": "FINAL-10"
+  },
+  {
+    "Ticker": "NVDA",
+    "Price": 111.0,
+    "Action": "SELL",
+    "Date": "2026-04-04T16:47:08.544039",
+    "Account Number": "ACC_1",
+    "TradeID": "FINAL-11"
+  },
+  {
+    "Ticker": "NVDA",
+    "Price": 112.0,
+    "Action": "BUY",
+    "Date": "2026-04-04T16:47:08.544428",
+    "Account Number": "ACC_1",
+    "TradeID": "FINAL-12"
+  },
+  {
+    "Ticker": "NVDA",
+    "Price": 113.0,
+    "Action": "SELL",
+    "Date": "2026-04-04T16:47:08.544719",
+    "Account Number": "ACC_1",
+    "TradeID": "FINAL-13"
+  },
+  {
+    "Ticker": "NVDA",
+    "Price": 114.0,
+    "Action": "BUY",
+    "Date": "2026-04-04T16:47:08.544999",
+    "Account Number": "ACC_1",
+    "TradeID": "FINAL-14"
+  },
+  {
+    "Ticker": "NVDA",
+    "Price": 115.0,
+    "Action": "SELL",
+    "Date": "2026-04-04T16:47:08.545265",
+    "Account Number": "ACC_1",
+    "TradeID": "FINAL-15"
+  },
+  {
+    "Ticker": "AAPL",
+    "Price": 116.0,
+    "Action": "BUY",
+    "Date": "2026-04-04T16:47:08.545528",
+    "Account Number": "ACC_2",
+    "TradeID": "FINAL-16"
+  },
+  {
+    "Ticker": "AAPL",
+    "Price": 117.0,
+    "Action": "BUY",
+    "Date": "2026-04-04T16:47:08.545783",
+    "Account Number": "ACC_3",
+    "TradeID": "FINAL-17"
+  },
+  {
+    "Ticker": "GOOGL",
+    "Price": 118.0,
+    "Action": "BUY",
+    "Date": "2026-04-04T16:47:08.546031",
+    "Account Number": "ACC_4",
+    "TradeID": "FINAL-18"
+  },
+  {
+    "Ticker": "GOOGL",
+    "Price": 119.0,
+    "Action": "BUY",
+    "Date": "2026-04-04T16:47:08.546300",
+    "Account Number": "ACC_4",
+    "TradeID": "FINAL-19"
+  },
+  {
+    "Ticker": "GOOGL",
+    "Price": 120.0,
+    "Action": "SELL",
+    "Date": "2026-04-04T16:47:08.546581",
+    "Account Number": "ACC_4",
+    "TradeID": "FINAL-20"
+  }
+]

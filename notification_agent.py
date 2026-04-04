@@ -25,7 +25,7 @@ class NotificationChannel:
 class LogChannel(NotificationChannel):
     def send(self, event):
         if event.get('event_type') == "BATCH_PDT_ALERT":
-            accounts = [a.get('account') for r in event.get('flagged_accounts', [])]
+            accounts = [report.get('account') for report in event.get('flagged_accounts', [])]
             logger.info(f" [NOTIFICATION LOG] BATCH ALERT: Flagged {len(accounts)} accounts: {accounts}")
         else:
             logger.info(f" [NOTIFICATION LOG] {event.get('event_type')}: Account {event.get('account_number')}")
@@ -40,10 +40,13 @@ class EmailChannel(NotificationChannel):
     def send(self, event):
         logger.info(f" [EMAIL CHANNEL] Preparing summary email...")
         
+        provider = event.get('provider', 'unknown').upper()
+        status_tag = "[REAL AI]" if provider == "GEMINI" else "[FAKE/TEST]"
+        
         msg = MIMEMultipart()
         msg['From'] = self.email_user
         msg['To'] = self.email_user
-        msg['Subject'] = f"InvestAI GLOBAL SUMMARY: {len(event.get('flagged_accounts', []))} Violations Detected"
+        msg['Subject'] = f"{status_tag} InvestAI GLOBAL SUMMARY: {len(event.get('flagged_accounts', []))} Violations"
 
         body = "InvestAI Audit Summary Report\n"
         body += "=" * 30 + "\n\n"
@@ -82,6 +85,10 @@ class NotificationAgent:
                 logger.error(f"Failed to initialize email channel: {e}")
 
     def dispatch(self, event):
+        # [DEBUG]
+        received_provider = event.get('provider', 'unknown')
+        print(f"\n[DEBUG NOTIFY] RECEIVED EVENT FROM PROVIDER: {received_provider}\n", flush=True)
+
         # Now we just dispatch whatever batch we get. 
         # Throttling is handled by the Audit Agent's global window.
         for channel in self.channels:
