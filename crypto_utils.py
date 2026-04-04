@@ -1,6 +1,10 @@
 import os
 from cryptography.fernet import Fernet
 import sys
+from dotenv import load_dotenv
+
+# Load local environment
+load_dotenv(override=True)
 
 KEY_FILE = "master.key"
 

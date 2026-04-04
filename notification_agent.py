@@ -9,7 +9,11 @@ import redis
 import threading
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from dotenv import load_dotenv
 from crypto_utils import decrypt_string
+
+# Force load .env
+load_dotenv(override=True)
 
 # Configure logging
 logging.basicConfig(
@@ -25,8 +29,9 @@ class NotificationChannel:
 class LogChannel(NotificationChannel):
     def send(self, event):
         if event.get('event_type') == "BATCH_PDT_ALERT":
-            accounts = [report.get('account') for report in event.get('flagged_accounts', [])]
-            logger.info(f" [NOTIFICATION LOG] BATCH ALERT: Flagged {len(accounts)} accounts: {accounts}")
+            # Only count accounts with DECISION: FLAG
+            flagged = [r.get('account') for r in event.get('flagged_accounts', []) if r.get('decision') == 'FLAG']
+            logger.info(f" [NOTIFICATION LOG] BATCH ALERT: Found {len(flagged)} violations: {flagged}")
         else:
             logger.info(f" [NOTIFICATION LOG] {event.get('event_type')}: Account {event.get('account_number')}")
 

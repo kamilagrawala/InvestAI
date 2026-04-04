@@ -4,7 +4,11 @@ import os
 import random
 import sys
 from datetime import datetime
+from dotenv import load_dotenv
 from crypto_utils import decrypt_string
+
+# Force load .env to override OS variables
+load_dotenv(override=True)
 
 def send_trades():
     try:

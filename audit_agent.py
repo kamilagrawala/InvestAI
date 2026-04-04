@@ -8,7 +8,12 @@ import threading
 from datetime import datetime
 from typing import List, Optional
 from pydantic import BaseModel, Field
+from dotenv import load_dotenv
 from crypto_utils import decrypt_string
+
+# Force load local environment
+load_dotenv(override=True)
+
 from langchain.prompts import PromptTemplate
 from langchain_community.llms import FakeListLLM
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -166,7 +171,12 @@ class AuditAgent:
                     flagged_list = json.loads(result).get('flagged_accounts', [])
                 
                 if flagged_list:
-                    logger.warning(f"!!! GLOBAL ALERT !!! AI flagged {len(flagged_list)} accounts.")
+                    # Filter only those with DECISION: FLAG for the alert log
+                    actually_flagged = [a for a in flagged_list if a.get('decision') == 'FLAG']
+                    
+                    if actually_flagged:
+                        logger.warning(f"!!! GLOBAL ALERT !!! AI flagged {len(actually_flagged)} accounts.")
+                    
                     print(f"\n[AI REASONING]\n{json.dumps(flagged_list, indent=2)}\n", flush=True)
                     
                     notification_event = {

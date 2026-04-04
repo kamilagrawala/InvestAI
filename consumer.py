@@ -4,7 +4,11 @@ import logging
 import time
 import sys
 import os
+from dotenv import load_dotenv
 from crypto_utils import decrypt_string
+
+# Force load .env
+load_dotenv(override=True)
 
 # Configure logging
 logging.basicConfig(
