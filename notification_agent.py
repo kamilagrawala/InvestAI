@@ -48,10 +48,14 @@ class EmailChannel(NotificationChannel):
         provider = event.get('provider', 'unknown').upper()
         status_tag = "[REAL AI]" if provider == "GEMINI" else "[FAKE/TEST]"
         
+        # Filter to get actual violation count for the subject line
+        all_accounts = event.get('flagged_accounts', [])
+        actual_violations = [a for a in all_accounts if a.get('decision') == 'FLAG']
+        
         msg = MIMEMultipart()
         msg['From'] = self.email_user
         msg['To'] = self.email_user
-        msg['Subject'] = f"{status_tag} InvestAI GLOBAL SUMMARY: {len(event.get('flagged_accounts', []))} Violations"
+        msg['Subject'] = f"{status_tag} InvestAI GLOBAL SUMMARY: {len(actual_violations)} Violations"
 
         body = "InvestAI Audit Summary Report\n"
         body += "=" * 30 + "\n\n"
