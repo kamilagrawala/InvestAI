@@ -17,7 +17,7 @@ services:
       - REDIS_HOST=redis
     restart: always
     extra_hosts:
-      - "host.docker.internal:192.168.1.75"
+      - "host.docker.internal:192.168.1.187"
 
   audit_agent:
     build: .
@@ -35,7 +35,7 @@ services:
       - GOOGLE_MASTER_KEY=${GOOGLE_MASTER_KEY}
     restart: always
     extra_hosts:
-      - "host.docker.internal:192.168.1.75"
+      - "host.docker.internal:192.168.1.187"
 
   notification_agent:
     build: .
@@ -53,4 +53,4 @@ services:
       - REDIS_HOST=redis
     restart: always
     extra_hosts:
-      - "host.docker.internal:192.168.1.75"
+      - "host.docker.internal:192.168.1.187"

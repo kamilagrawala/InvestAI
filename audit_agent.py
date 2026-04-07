@@ -182,6 +182,7 @@ class AuditAgent:
                     notification_event = {
                         "event_type": "BATCH_PDT_ALERT",
                         "flagged_accounts": flagged_list,
+                        "total_audited_count": len(active_accounts), # Explicitly pass total
                         "provider": active_provider,
                         "timestamp": datetime.now().isoformat()
                     }

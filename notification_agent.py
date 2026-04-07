@@ -48,25 +48,36 @@ class EmailChannel(NotificationChannel):
         provider = event.get('provider', 'unknown').upper()
         status_tag = "[REAL AI]" if provider == "GEMINI" else "[FAKE/TEST]"
         
-        # Filter to get actual violation count for the subject line
-        all_accounts = event.get('flagged_accounts', [])
-        actual_violations = [a for a in all_accounts if a.get('decision') == 'FLAG']
+        all_reports = event.get('flagged_accounts', [])
+        flagged_accounts = [a for a in all_reports if a.get('decision') == 'FLAG']
+        
+        # Priority: Use the explicit count if provided, else fallback to report length
+        total_count = event.get('total_audited_count', len(all_reports))
+        passed_count = total_count - len(flagged_accounts)
+        fail_rate = (len(flagged_accounts) / total_count * 100) if total_count > 0 else 0
         
         msg = MIMEMultipart()
         msg['From'] = self.email_user
         msg['To'] = self.email_user
-        msg['Subject'] = f"{status_tag} InvestAI GLOBAL SUMMARY: {len(actual_violations)} Violations"
+        msg['Subject'] = f"{status_tag} InvestAI Audit: {len(flagged_accounts)} Violations Detected"
 
-        body = "InvestAI Audit Summary Report\n"
+        body = "InvestAI Audit Violation Report\n"
         body += "=" * 30 + "\n\n"
         
-        for account_report in event.get('flagged_accounts', []):
-            body += f"ACCOUNT: {account_report.get('account')}\n"
-            body += f"DECISION: {account_report.get('decision')}\n"
-            body += f"REASON: {account_report.get('reason')}\n"
-            body += "-" * 20 + "\n"
+        if not flagged_accounts:
+            body += "No violations detected in this window.\n"
+        else:
+            for account_report in flagged_accounts:
+                body += f"ACCOUNT: {account_report.get('account')}\n"
+                body += f"REASON: {account_report.get('reason')}\n"
+                body += "-" * 20 + "\n"
 
+        body += f"\nSUMMARY STATISTICS:\n"
+        body += f"Total Accounts Audited: {total_count}\n"
+        body += f"Violations Found: {len(flagged_accounts)}\n"
+        body += f"Fail Rate: {fail_rate:.1f}%\n"
         body += f"\nTimestamp: {event.get('timestamp')}"
+        
         msg.attach(MIMEText(body, 'plain'))
 
         try:
