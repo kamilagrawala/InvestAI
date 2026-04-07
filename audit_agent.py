@@ -231,15 +231,25 @@ class AuditAgent:
         rabbitmq_user_raw = os.getenv('RABBITMQ_USER', 'admin')
         rabbitmq_pass_raw = os.getenv('RABBITMQ_PASS', 'password')
         
-        try:
-            r_user = decrypt_string(rabbitmq_user_raw, env_name="RABBITMQ_MASTER_KEY") if len(rabbitmq_user_raw) > 50 else rabbitmq_user_raw
-            r_pass = decrypt_string(rabbitmq_pass_raw, env_name="RABBITMQ_MASTER_KEY") if len(rabbitmq_pass_raw) > 50 else rabbitmq_pass_raw
-        except Exception:
-            r_user, r_pass = rabbitmq_user_raw, rabbitmq_pass_raw
+        max_retries = 10
+        for attempt in range(max_retries):
+            try:
+                try:
+                    r_user = decrypt_string(rabbitmq_user_raw, env_name="RABBITMQ_MASTER_KEY") if len(rabbitmq_user_raw) > 50 else rabbitmq_user_raw
+                    r_pass = decrypt_string(rabbitmq_pass_raw, env_name="RABBITMQ_MASTER_KEY") if len(rabbitmq_pass_raw) > 50 else rabbitmq_pass_raw
+                except Exception:
+                    r_user, r_pass = rabbitmq_user_raw, rabbitmq_pass_raw
 
-        credentials = pika.PlainCredentials(r_user, r_pass)
-        connection = pika.BlockingConnection(pika.ConnectionParameters(host=rabbitmq_host, credentials=credentials))
-        self.channel = connection.channel()
+                credentials = pika.PlainCredentials(r_user, r_pass)
+                connection = pika.BlockingConnection(pika.ConnectionParameters(host=rabbitmq_host, credentials=credentials))
+                self.channel = connection.channel()
+                break
+            except Exception as e:
+                logger.warning(f"RabbitMQ not ready (attempt {attempt+1}/{max_retries})...")
+                time.sleep(5)
+        else:
+            logger.error("Failed to connect to RabbitMQ after retries.")
+            return
 
         self.channel.queue_declare(queue='audit_trades', durable=True)
         self.channel.queue_bind(exchange='amq.direct', queue='audit_trades', routing_key='stock_trades')
