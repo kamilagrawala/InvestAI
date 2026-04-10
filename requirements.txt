@@ -7,3 +7,4 @@ langchain-google-genai
 google-genai
 pydantic
 python-dotenv
+psycopg2-binary

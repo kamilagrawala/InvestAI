@@ -8,7 +8,7 @@ services:
       - "15672:15672"
     environment:
       - RABBITMQ_DEFAULT_USER=admin
-      - RABBITMQ_DEFAULT_PASS=new_stable_password_123 # We'll use the same stable pass for consistency
+      - RABBITMQ_DEFAULT_PASS=new_stable_password_123
     restart: always
 
   redis:
@@ -18,16 +18,35 @@ services:
       - "6379:6379"
     restart: always
 
+  db:
+    image: postgres:9.6-alpine
+    container_name: investai_db
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER_RAW}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD_RAW}
+      - POSTGRES_DB=investai
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: always
+
   consumer:
     build: .
     command: ["python", "-u", "consumer.py"]
     depends_on:
       - rabbitmq
+      - db
     environment:
       - RABBITMQ_HOST=rabbitmq
       - RABBITMQ_USER=${RABBITMQ_USER}
       - RABBITMQ_PASS=${RABBITMQ_PASS}
       - RABBITMQ_MASTER_KEY=${RABBITMQ_MASTER_KEY}
+      - DB_HOST=db
+      - DB_USER_ENCRYPTED=${DB_USER_ENCRYPTED}
+      - DB_PASS_ENCRYPTED=${DB_PASS_ENCRYPTED}
+      - POSTGRES_MASTER_KEY=${POSTGRES_MASTER_KEY}
+      - DB_NAME=investai
     restart: always
 
   audit_agent:
@@ -36,6 +55,7 @@ services:
     depends_on:
       - rabbitmq
       - redis
+      - db
     environment:
       - RABBITMQ_HOST=rabbitmq
       - RABBITMQ_USER=${RABBITMQ_USER}
@@ -45,6 +65,11 @@ services:
       - LLM_PROVIDER=${LLM_PROVIDER}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - GOOGLE_MASTER_KEY=${GOOGLE_MASTER_KEY}
+      - DB_HOST=db
+      - DB_USER_ENCRYPTED=${DB_USER_ENCRYPTED}
+      - DB_PASS_ENCRYPTED=${DB_PASS_ENCRYPTED}
+      - POSTGRES_MASTER_KEY=${POSTGRES_MASTER_KEY}
+      - DB_NAME=investai
     restart: always
 
   notification_agent:
@@ -73,4 +98,6 @@ services:
       - RABBITMQ_USER=${RABBITMQ_USER}
       - RABBITMQ_PASS=${RABBITMQ_PASS}
       - RABBITMQ_MASTER_KEY=${RABBITMQ_MASTER_KEY}
-    # Note: Producer will exit after sending trades, this is expected for our load test
+
+volumes:
+  postgres_data:
