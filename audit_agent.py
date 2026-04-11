@@ -29,11 +29,13 @@ logger = logging.getLogger("AuditAgent")
 # --- Structured Output Schema ---
 class FlaggedAccount(BaseModel):
     account: str = Field(description="The ID of the account being audited")
-    decision: str = Field(description="Either FLAG or PASS")
-    reason: str = Field(description="Brief explanation of the decision")
+    decision: str = Field(description="Either FLAG, PASS, or BLOCK")
+    violation_type: str = Field(description="The type of activity detected: PDT, INSIDER_TRADING, SPOOFING, PUMP_AND_DUMP, UNAUTHORIZED, or NONE")
+    severity: str = Field(description="Severity: LOW, MEDIUM, HIGH, CRITICAL")
+    reason: str = Field(description="Detailed explanation of the decision and detected pattern")
 
 class AuditReport(BaseModel):
-    flagged_accounts: List[FlaggedAccount] = Field(description="List of accounts that met the PDT criteria")
+    flagged_accounts: List[FlaggedAccount] = Field(description="List of accounts analyzed for compliance")
 
 # --- Agent Implementation ---
 class AuditAgent:
@@ -57,15 +59,20 @@ class AuditAgent:
         # 3. LLM Factory Setup (Pure LangChain)
         self.llm = self._get_llm(self.current_provider)
         
-        # 4. The "Global PDT Expert" Prompt
+        # 4. The "Global Compliance Auditor" Prompt
         self.prompt = PromptTemplate.from_template(
-            "SYSTEM: You are a Financial Compliance Officer. Your task is to identify PATTERN DAY TRADERS (PDT).\n"
-            "DEFINITION: A Pattern Day Trader executes four or more 'round-trip' trades "
-            "within five business days. A 'round-trip' is the purchase and sale (or sale and purchase) "
-            "of the same security on the same day.\n\n"
-            "CONTEXT: Here is the recent trade history for multiple accounts:\n"
+            "SYSTEM: You are a Senior Financial Compliance Auditor. Your task is to identify dubious or fraudulent trading activity.\n\n"
+            "RULES TO ENFORCE:\n"
+            "1. PATTERN DAY TRADER (PDT): Executes 4+ 'round-trip' trades (buy/sell or sell/buy of same security on same day) within 5 business days.\n"
+            "2. WASH TRADING / SPOOFING: Rapidly buying and selling (or bidding/offering) to create artificial volume or move prices (e.g. 10+ trades in 10s).\n"
+            "3. PUMP & DUMP: Coordinated rapid buying of low-cap stocks followed by a dump.\n"
+            "4. INSIDER TRADING: Massive trades that appear suspiciously timed (e.g. outlier volume/price in single trade).\n\n"
+            "CONTEXT: Here is the trade history for multiple accounts:\n"
             "{batch_data}\n\n"
-            "ANALYSIS: For each account, analyze if they meet the PDT criteria.\n"
+            "ANALYSIS: For each account, analyze the patterns. \n"
+            "- If activity is highly suspicious (SPOOFING, PUMP_AND_DUMP, INSIDER), set decision to 'BLOCK' and severity to 'HIGH' or 'CRITICAL'.\n"
+            "- If it's a standard PDT violation, set decision to 'FLAG' and severity to 'MEDIUM'.\n"
+            "- If no violation, set decision to 'PASS' and violation_type to 'NONE'.\n"
         )
         
         # Enable Structured Output if using a real model
@@ -121,11 +128,14 @@ class AuditAgent:
 
     def _get_llm(self, provider):
         if provider == "fake":
-            # Realistic stub matching the schema
+            # Realistic stub matching the expanded schema
             mock_json = {
                 "flagged_accounts": [
-                    {"account": "ACC_0", "decision": "FLAG", "reason": "Meets PDT threshold."},
-                    {"account": "ACC_1", "decision": "FLAG", "reason": "High frequency round-trips."}
+                    {"account": "ACC_0", "decision": "FLAG", "violation_type": "PDT", "severity": "MEDIUM", "reason": "Meets PDT threshold."},
+                    {"account": "ACC_1", "decision": "FLAG", "violation_type": "PDT", "severity": "MEDIUM", "reason": "High frequency round-trips."},
+                    {"account": "ACC_SPOOF", "decision": "BLOCK", "violation_type": "SPOOFING", "severity": "HIGH", "reason": "Detected rapid buy-side activity followed by a large sell-side execution."},
+                    {"account": "ACC_PUMP", "decision": "BLOCK", "violation_type": "PUMP_AND_DUMP", "severity": "CRITICAL", "reason": "Rapid accumulation of low-cap ticker PENY detected."},
+                    {"account": "ACC_INSIDER", "decision": "FLAG", "violation_type": "INSIDER_TRADING", "severity": "HIGH", "reason": "Outlier volume detected in BIOX."}
                 ]
             }
             return FakeListLLM(responses=[json.dumps(mock_json)])
@@ -183,83 +193,119 @@ class AuditAgent:
         except Exception as e:
             logger.error(f"Failed to publish notification: {e}")
 
+    def _log_violation_to_db(self, report: FlaggedAccount, action_taken: str):
+        """Persists AI reasoning and action taken to the VIOLATION_LOG table."""
+        conn = self._get_db_connection()
+        if conn:
+            try:
+                cur = conn.cursor()
+                cur.execute("""
+                    INSERT INTO VIOLATION_LOG (account_number, violation_type, severity, reason, action_taken)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (
+                    report.account,
+                    report.violation_type,
+                    report.severity,
+                    report.reason,
+                    action_taken
+                ))
+                conn.commit()
+                cur.close()
+                logger.info(f"Persisted violation for {report.account} to DB.")
+            except Exception as e:
+                logger.error(f"Failed to log violation to DB: {e}")
+            finally:
+                conn.close()
+
+    def _block_account(self, account: str, reason: str):
+        """Blocks an account in Redis for 24 hours."""
+        try:
+            block_key = f"blocked_account:{account}"
+            # Store for 24h (86400s)
+            self.redis.setex(block_key, 86400, reason)
+            logger.warning(f"!!! ACCOUNT BLOCKED !!! {account} | Reason: {reason}")
+        except Exception as e:
+            logger.error(f"Failed to block account {account} in Redis: {e}")
+
     def _perform_batch_ai_audit(self):
-        """Performs a single AI call for all accounts that traded in the last window."""
+        """Performs AI audits for all accounts that traded in the last window."""
         active_provider = os.getenv("LLM_PROVIDER", "unknown")
         try:
             active_accounts = list(self.redis.smembers("active_accounts_this_window"))
             if not active_accounts: return
 
-            batch_data = ""
-            for account in active_accounts:
-                # 1. Start with Redis Cache (Real-time window)
-                history_key = f"history:{account}"
-                redis_history = self.redis.lrange(history_key, 0, -1)
-                
-                # 2. Rehydrate with PG history for the full 5-day window
-                db_history = self._get_history_from_db(account)
-                
-                # 3. Deduplicate and merge (DB is primary, Redis has newest)
-                # We use a simple set to deduplicate by ID if present
-                merged_history = []
-                seen_ids = set()
-                
-                for entry in db_history + redis_history:
-                    if "ID:" in entry:
-                        tid = entry.split("ID:")[1].strip()
-                        if tid not in seen_ids:
-                            merged_history.append(entry)
-                            seen_ids.add(tid)
-                    else:
-                        merged_history.append(entry)
-
-                batch_data += f"\nACCOUNT: {account}\n"
-                batch_data += "\n".join([f"- {item}" for item in merged_history])
-                batch_data += "\n" + ("=" * 20)
-
-            logger.info(f" [GLOBAL AUDIT] Window closed. Analyzing {len(active_accounts)} accounts in ONE call...")
+            logger.info(f" [GLOBAL AUDIT] Window closed. Auditing {len(active_accounts)} accounts individually...")
             
-            try:
-                # Execute LangChain Chain (Real AI returns Pydantic object, Fake returns string)
-                result = self.chain.invoke({"batch_data": batch_data})
-                
-                # Normalize result to dict
-                if hasattr(result, 'model_dump'): # If Pydantic model (Real AI)
-                    flagged_list = result.model_dump().get('flagged_accounts', [])
-                else: # If string (Fake LLM)
-                    flagged_list = json.loads(result).get('flagged_accounts', [])
-                
-                if flagged_list:
-                    # Filter only those with DECISION: FLAG for the alert log
-                    actually_flagged = [a for a in flagged_list if a.get('decision') == 'FLAG']
+            all_flagged_accounts = []
+            
+            for account in active_accounts:
+                try:
+                    # 1. Start with Redis Cache (Real-time window)
+                    history_key = f"history:{account}"
+                    redis_history = self.redis.lrange(history_key, 0, -1)
                     
-                    if actually_flagged:
-                        logger.warning(f"!!! GLOBAL ALERT !!! AI flagged {len(actually_flagged)} accounts.")
+                    # 2. Rehydrate with PG history for the full 5-day window
+                    db_history = self._get_history_from_db(account)
                     
-                    print(f"\n[AI REASONING]\n{json.dumps(flagged_list, indent=2)}\n", flush=True)
-                    
-                    notification_event = {
-                        "event_type": "BATCH_PDT_ALERT",
-                        "flagged_accounts": flagged_list,
-                        "audited_accounts": active_accounts, # Pass full list for purging
-                        "total_audited_count": len(active_accounts),
-                        "provider": active_provider,
-                        "timestamp": datetime.now().isoformat()
-                    }
-                    print(f"[DEBUG AUDIT] PUBLISHING ALERT WITH PROVIDER: {active_provider}", flush=True)
-                    self._publish_notification(notification_event)
-                else:
-                    logger.info("Global Audit: No accounts flagged this window.")
+                    # 3. Deduplicate and merge
+                    merged_history = []
+                    seen_ids = set()
+                    for entry in db_history + redis_history:
+                        if "ID:" in entry:
+                            tid = entry.split("ID:")[1].strip()
+                            if tid not in seen_ids:
+                                merged_history.append(entry)
+                                seen_ids.add(tid)
+                        else:
+                            merged_history.append(entry)
 
-            except Exception as e:
-                logger.error(f"LLM Call or Parsing Failed: {e}")
+                    batch_data = f"ACCOUNT: {account}\n" + "\n".join([f"- {item}" for item in merged_history])
+                    
+                    # Execute AI call for THIS account
+                    result = self.chain.invoke({"batch_data": batch_data})
+                    
+                    # Normalize result to dict
+                    if hasattr(result, 'model_dump'):
+                        flagged_list = result.model_dump().get('flagged_accounts', [])
+                    else:
+                        flagged_list = json.loads(result).get('flagged_accounts', [])
+                    
+                    if flagged_list:
+                        for report_dict in flagged_list:
+                            report = FlaggedAccount(**report_dict) if isinstance(report_dict, dict) else report_dict
+                            
+                            # Only process the report if it actually matches the account we asked about
+                            if report.account != account and report.account != "SYSTEM":
+                                continue
+
+                            action = "NOTIFIED"
+                            if report.decision == "BLOCK":
+                                self._block_account(report.account, report.reason)
+                                action = "BLOCKED"
+                            elif report.decision == "FLAG":
+                                action = "FLAGGED"
+                            
+                            if report.decision in ["FLAG", "BLOCK"]:
+                                self._log_violation_to_db(report, action)
+                            
+                            all_flagged_accounts.append(report.model_dump() if hasattr(report, 'model_dump') else report_dict)
+
+                except Exception as e:
+                    logger.error(f"Audit failed for {account}: {e}")
+
+            if all_flagged_accounts or active_accounts:
                 notification_event = {
                     "event_type": "BATCH_PDT_ALERT",
-                    "flagged_accounts": [{"account": "SYSTEM", "decision": "ERROR", "reason": str(e)[:100]}],
+                    "flagged_accounts": all_flagged_accounts,
                     "audited_accounts": active_accounts,
-                    "provider": f"ERROR ({active_provider})",
+                    "total_audited_count": len(active_accounts),
+                    "provider": active_provider,
                     "timestamp": datetime.now().isoformat()
                 }
+                actually_flagged = [a for a in all_flagged_accounts if a.get('decision') in ['FLAG', 'BLOCK']]
+                if actually_flagged:
+                    logger.warning(f"!!! COMPLIANCE ALERT !!! AI flagged {len(actually_flagged)} accounts.")
+                
                 self._publish_notification(notification_event)
 
             self.redis.delete("active_accounts_this_window")

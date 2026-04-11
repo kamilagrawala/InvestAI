@@ -45,32 +45,42 @@ def send_trades():
 
         trades_plan = []
         
-        # 1. ACC_0 & ACC_1: 4 Round Trips each -> Guaranteed FLAG
+        # 1. ACC_0 & ACC_1: 4 Round Trips each -> Guaranteed FLAG (PDT)
         for acc in ['ACC_0', 'ACC_1']:
             for i in range(4):
                 trades_plan.append({'account': acc, 'action': 'BUY', 'ticker': 'NVDA'})
                 trades_plan.append({'account': acc, 'action': 'SELL', 'ticker': 'NVDA'})
         
-        # 2. ACC_2 & ACC_3: 1 Trade each -> Guaranteed PASS
-        for acc in ['ACC_2', 'ACC_3']:
-            trades_plan.append({'account': acc, 'action': 'BUY', 'ticker': 'AAPL'})
-            
-        # 3. ACC_4: EXACTLY 3 Trades (BUY, BUY, SELL) -> 1 Round Trip. MUST BE A PASS.
-        trades_plan.append({'account': 'ACC_4', 'action': 'BUY', 'ticker': 'GOOGL'})
+        # 2. ACC_SPOOF: 10 Rapid BUYs at increasing prices, then a single large SELL.
+        for i in range(10):
+            trades_plan.append({'account': 'ACC_SPOOF', 'action': 'BUY', 'ticker': 'AAPL', 'price_offset': i * 0.1})
+        trades_plan.append({'account': 'ACC_SPOOF', 'action': 'SELL', 'ticker': 'AAPL', 'price_offset': 1.0})
+
+        # 3. ACC_PUMP: Rapid accumulation of a low-cap stock.
+        for i in range(8):
+            trades_plan.append({'account': 'ACC_PUMP', 'action': 'BUY', 'ticker': 'PENY'})
+        
+        # 4. ACC_INSIDER: A single massive BUY trade right before a "Market News" event.
+        trades_plan.append({'account': 'ACC_INSIDER', 'action': 'BUY', 'ticker': 'BIOX', 'price': 500.0})
+
+        # 5. ACC_4: Regular activity
         trades_plan.append({'account': 'ACC_4', 'action': 'BUY', 'ticker': 'GOOGL'})
         trades_plan.append({'account': 'ACC_4', 'action': 'SELL', 'ticker': 'GOOGL'})
 
         full_audit_log = []
-        print(f"[{datetime.now().isoformat()}] Sending 21 deterministic trades...")
+        print(f"[{datetime.now().isoformat()}] Sending {len(trades_plan)} compliance test trades...")
         
         for i, trade in enumerate(trades_plan):
+            base_price = trade.get('price', 100.0)
+            offset = trade.get('price_offset', 0.0)
+            
             trade_data = {
                 'Ticker': trade['ticker'],
-                'Price': 100.0 + i,
+                'Price': base_price + offset + i,
                 'Action': trade['action'],
                 'Date': datetime.now().isoformat(),
                 'Account Number': trade['account'],
-                'TradeID': f"FINAL-{i}"
+                'TradeID': f"SEC-TEST-{i}"
             }
             
             # Save ALL fields for the independent audit

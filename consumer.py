@@ -5,6 +5,7 @@ import sys
 import os
 import pika
 import psycopg2
+import redis
 from dotenv import load_dotenv
 from crypto_utils import decrypt_string
 
@@ -17,6 +18,10 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Redis setup for block-list checking
+redis_host = os.getenv("REDIS_HOST", "localhost")
+r_client = redis.Redis(host=redis_host, port=6379, db=0, decode_responses=True)
 
 def get_db_connection():
     try:
@@ -66,8 +71,23 @@ def init_db():
                 )
             """)
             conn.commit()
+            
+            # Create VIOLATION_LOG table
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS VIOLATION_LOG (
+                    id SERIAL PRIMARY KEY,
+                    account_number VARCHAR(50),
+                    violation_type VARCHAR(50),
+                    severity VARCHAR(20),
+                    reason TEXT,
+                    action_taken VARCHAR(50),
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.commit()
+            
             cur.close()
-            logger.info("Database initialized.")
+            logger.info("Database initialized with VIOLATION_LOG.")
         finally:
             conn.close()
 
@@ -95,6 +115,39 @@ def save_trade(trade_data):
         finally:
             conn.close()
 
+def is_account_blocked(account_number):
+    """Layered check: 1. Redis (hot), 2. DB (durable)"""
+    if not account_number: return False
+    
+    # 1. Hot Check (Redis)
+    try:
+        if r_client.exists(f"blocked_account:{account_number}"):
+            return True
+    except Exception as e:
+        logger.error(f"Redis check failed: {e}")
+
+    # 2. Durable Check (DB)
+    conn = get_db_connection()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT 1 FROM VIOLATION_LOG WHERE account_number = %s AND action_taken = 'BLOCKED' LIMIT 1", (account_number,))
+            blocked = cur.fetchone() is not None
+            cur.close()
+            
+            # 3. Optional: Back-fill Redis if found in DB for next time
+            if blocked:
+                try:
+                    r_client.setex(f"blocked_account:{account_number}", 3600, "Primed from DB")
+                except: pass
+                
+            return blocked
+        except Exception as e:
+            logger.error(f"DB block check failed: {e}")
+        finally:
+            conn.close()
+    return False
+
 def callback(ch, method, properties, body):
     start_time = time.time()
     try:
@@ -102,9 +155,17 @@ def callback(ch, method, properties, body):
         ticker = trade_data.get('Ticker')
         action = trade_data.get('Action', 'UNKNOWN')
         trade_id = trade_data.get('TradeID', 'N/A')
+        account = trade_data.get('Account Number')
         
         logger.info(f"START Processing trade {trade_id}: {action} {ticker}")
         
+        # GATEKEEPER: Check if account is blocked
+        if is_account_blocked(account):
+            print(f"\n[GATEKEEPER] BLOCKING TRADE: {trade_id} from {account}\n", flush=True)
+            logger.warning(f"!!! DROPPED_TRADE !!! Rejected trade {trade_id} from blocked account: {account}")
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+            return
+
         # 1. PERSIST TO POSTGRES
         save_trade(trade_data)
         
@@ -121,43 +182,34 @@ def callback(ch, method, properties, body):
         sys.stdout.flush()
 
 def main():
-    # DB initialization with more aggressive retries for legacy containers
-    max_db_retries = 20
-    for i in range(max_db_retries):
-        try:
-            init_db()
-            break
-        except Exception as e:
-            logger.warning(f"Database not ready (attempt {i+1}/{max_db_retries})... Error: {e}")
-            time.sleep(10)
-
     rabbitmq_host = os.getenv('RABBITMQ_HOST', 'localhost')
-    rabbitmq_user_raw = os.getenv('RABBITMQ_USER', 'guest')
-    rabbitmq_pass_raw = os.getenv('RABBITMQ_PASS', 'guest')
     
-    try:
-        rabbitmq_user = decrypt_string(rabbitmq_user_raw, env_name="RABBITMQ_MASTER_KEY") if len(rabbitmq_user_raw) > 50 else rabbitmq_user_raw
-        rabbitmq_pass = decrypt_string(rabbitmq_pass_raw, env_name="RABBITMQ_MASTER_KEY") if len(rabbitmq_pass_raw) > 50 else rabbitmq_pass_raw
-    except Exception as e:
-        logger.error(f"Decryption failed: {e}")
-        rabbitmq_user, rabbitmq_pass = rabbitmq_user_raw, rabbitmq_pass_raw
+    # DB initialization
+    init_db()
 
-    credentials = pika.PlainCredentials(rabbitmq_user, rabbitmq_pass)
-    
-    while True:
+    # RabbitMQ connection with retries
+    max_retries = 10
+    for attempt in range(max_retries):
         try:
-            connection = pika.BlockingConnection(pika.ConnectionParameters(
-                host=rabbitmq_host, port=5672, credentials=credentials, heartbeat=60
-            ))
+            rabbitmq_user_raw = os.getenv('RABBITMQ_USER', 'admin')
+            rabbitmq_pass_raw = os.getenv('RABBITMQ_PASS', 'password')
+            
+            r_user = decrypt_string(rabbitmq_user_raw, env_name="RABBITMQ_MASTER_KEY") if len(rabbitmq_user_raw) > 50 else rabbitmq_user_raw
+            r_pass = decrypt_string(rabbitmq_pass_raw, env_name="RABBITMQ_MASTER_KEY") if len(rabbitmq_pass_raw) > 50 else rabbitmq_pass_raw
+
+            credentials = pika.PlainCredentials(r_user, r_pass)
+            connection = pika.BlockingConnection(pika.ConnectionParameters(host=rabbitmq_host, credentials=credentials))
             channel = connection.channel()
+
             channel.queue_declare(queue='stock_trades', durable=True)
-            channel.queue_bind(exchange='amq.direct', queue='stock_trades', routing_key='stock_trades')
             channel.basic_qos(prefetch_count=50)
-            channel.basic_consume(queue='stock_trades', on_message_callback=callback, auto_ack=False)
-            logger.info(' [*] SUBSCRIPTION ACTIVE. Storage enabled.')
+            channel.basic_consume(queue='stock_trades', on_message_callback=callback)
+
+            logger.info(" [*] SUBSCRIPTION ACTIVE. Gatekeeper enabled.")
             channel.start_consuming()
+            break
         except pika.exceptions.AMQPConnectionError:
-            logger.warning("Connection lost. Retrying...")
+            logger.warning(f"RabbitMQ connection attempt {attempt+1} failed. Retrying...")
             time.sleep(5)
         except Exception as e:
             logger.error(f"Error: {e}")
