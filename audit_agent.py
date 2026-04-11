@@ -72,7 +72,8 @@ class AuditAgent:
             "ANALYSIS: For each account, analyze the patterns. \n"
             "- If activity is highly suspicious (SPOOFING, PUMP_AND_DUMP, INSIDER), set decision to 'BLOCK' and severity to 'HIGH' or 'CRITICAL'.\n"
             "- If it's a standard PDT violation, set decision to 'FLAG' and severity to 'MEDIUM'.\n"
-            "- If no violation, set decision to 'PASS' and violation_type to 'NONE'.\n"
+            "- If no violation, set decision to 'PASS' and violation_type to 'NONE'.\n\n"
+            "IMPORTANT: Keep 'reason' concise (under 200 characters). Do not truncate the account ID.\n"
         )
         
         # Enable Structured Output if using a real model

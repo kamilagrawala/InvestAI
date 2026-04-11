@@ -49,7 +49,7 @@ class EmailChannel(NotificationChannel):
         status_tag = "[REAL AI]" if provider == "GEMINI" else "[FAKE/TEST]"
         
         all_reports = event.get('flagged_accounts', [])
-        flagged_accounts = [a for a in all_reports if a.get('decision') == 'FLAG']
+        flagged_accounts = [a for a in all_reports if a.get('decision') in ['FLAG', 'BLOCK']]
         
         # Priority: Use the explicit count if provided, else fallback to report length
         total_count = event.get('total_audited_count', len(all_reports))
@@ -59,16 +59,18 @@ class EmailChannel(NotificationChannel):
         msg = MIMEMultipart()
         msg['From'] = self.email_user
         msg['To'] = self.email_user
-        msg['Subject'] = f"{status_tag} InvestAI Audit: {len(flagged_accounts)} Violations Detected"
+        msg['Subject'] = f"{status_tag} InvestAI Audit: {len(flagged_accounts)} Compliance Violations"
 
-        body = "InvestAI Audit Violation Report\n"
+        body = "InvestAI Compliance Audit Report\n"
         body += "=" * 30 + "\n\n"
         
         if not flagged_accounts:
             body += "No violations detected in this window.\n"
         else:
             for account_report in flagged_accounts:
-                body += f"ACCOUNT: {account_report.get('account')}\n"
+                decision = account_report.get('decision', 'FLAG')
+                body += f"ACCOUNT: {account_report.get('account')} [{decision}]\n"
+                body += f"TYPE: {account_report.get('violation_type', 'N/A')}\n"
                 body += f"REASON: {account_report.get('reason')}\n"
                 body += "-" * 20 + "\n"
 
