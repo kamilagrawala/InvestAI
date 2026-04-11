@@ -46,8 +46,15 @@ def init_db():
     if conn:
         try:
             cur = conn.cursor()
+            # Rename if old table exists
+            cur.execute("SELECT EXISTS (SELECT FROM pg_tables WHERE schemaname = 'public' AND tablename = 'trades');")
+            if cur.fetchone()[0]:
+                logger.info("Renaming existing 'trades' table to 'TRADEORDER'.")
+                cur.execute("ALTER TABLE trades RENAME TO TRADEORDER;")
+                conn.commit()
+
             cur.execute("""
-                CREATE TABLE IF NOT EXISTS trades (
+                CREATE TABLE IF NOT EXISTS TRADEORDER (
                     id SERIAL PRIMARY KEY,
                     trade_id VARCHAR(50) UNIQUE,
                     account_number VARCHAR(50),
@@ -70,7 +77,7 @@ def save_trade(trade_data):
         try:
             cur = conn.cursor()
             cur.execute("""
-                INSERT INTO trades (trade_id, account_number, ticker, action, price, trade_date)
+                INSERT INTO TRADEORDER (trade_id, account_number, ticker, action, price, trade_date)
                 VALUES (%s, %s, %s, %s, %s, %s)
                 ON CONFLICT (trade_id) DO NOTHING
             """, (
