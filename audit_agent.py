@@ -5,7 +5,8 @@ import os
 import redis
 import time
 import threading
-from datetime import datetime
+import psycopg2
+from datetime import datetime, timedelta
 from typing import List, Optional
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
@@ -14,7 +15,7 @@ from crypto_utils import decrypt_string
 # Force load local environment
 load_dotenv(override=True)
 
-from langchain.prompts import PromptTemplate
+from langchain_core.prompts import PromptTemplate
 from langchain_community.llms import FakeListLLM
 from langchain_google_genai import ChatGoogleGenerativeAI
 
@@ -44,13 +45,19 @@ class AuditAgent:
         # 1. Redis setup for shared memory
         redis_host = os.getenv("REDIS_HOST", "localhost")
         self.redis = redis.Redis(host=redis_host, port=6379, db=0, decode_responses=True)
-        self.history_limit = 20
+        self.history_limit = 50 # Increased limit for rehydrated history
         self.audit_window_seconds = 60 # Global 60s audit window
         
-        # 2. LLM Factory Setup (Pure LangChain)
+        # 2. DB credentials
+        self.db_host = os.getenv('DB_HOST', 'localhost')
+        self.db_name = os.getenv('DB_NAME', 'investai')
+        self.db_user_enc = os.getenv('DB_USER_ENCRYPTED')
+        self.db_pass_enc = os.getenv('DB_PASS_ENCRYPTED')
+
+        # 3. LLM Factory Setup (Pure LangChain)
         self.llm = self._get_llm(self.current_provider)
         
-        # 3. The "Global PDT Expert" Prompt
+        # 4. The "Global PDT Expert" Prompt
         self.prompt = PromptTemplate.from_template(
             "SYSTEM: You are a Financial Compliance Officer. Your task is to identify PATTERN DAY TRADERS (PDT).\n"
             "DEFINITION: A Pattern Day Trader executes four or more 'round-trip' trades "
@@ -68,7 +75,7 @@ class AuditAgent:
             # Fallback for FakeLLM which doesn't support with_structured_output
             self.chain = self.prompt | self.llm
 
-        # 4. Enable Keyspace Notifications
+        # 5. Enable Keyspace Notifications
         try:
             self.redis.config_set('notify-keyspace-events', 'Ex')
             logger.info("Redis keyspace notifications enabled for Global AuditAgent.")
@@ -78,6 +85,39 @@ class AuditAgent:
         # Start the background Global Expiration Listener
         self.listener_thread = threading.Thread(target=self._global_audit_listener, daemon=True)
         self.listener_thread.start()
+
+    def _get_db_connection(self):
+        try:
+            db_user = decrypt_string(self.db_user_enc, env_name="POSTGRES_MASTER_KEY")
+            db_pass = decrypt_string(self.db_pass_enc, env_name="POSTGRES_MASTER_KEY")
+            return psycopg2.connect(host=self.db_host, database=self.db_name, user=db_user, password=db_pass)
+        except Exception as e:
+            logger.error(f"DB Connection failed in AuditAgent: {e}")
+            return None
+
+    def _get_history_from_db(self, account: str) -> List[str]:
+        """Fetches last 5 days of history from Postgres for an account."""
+        conn = self._get_db_connection()
+        history = []
+        if conn:
+            try:
+                cur = conn.cursor()
+                five_days_ago = datetime.now() - timedelta(days=5)
+                cur.execute("""
+                    SELECT trade_date, action, ticker, trade_id 
+                    FROM TRADEORDER 
+                    WHERE account_number = %s AND trade_date >= %s
+                    ORDER BY trade_date ASC
+                """, (account, five_days_ago))
+                for row in cur.fetchall():
+                    ts, action, ticker, trade_id = row
+                    history.append(f"{ts.isoformat()} | {action} | {ticker} | ID:{trade_id}")
+                cur.close()
+            except Exception as e:
+                logger.error(f"Failed to fetch history from DB for {account}: {e}")
+            finally:
+                conn.close()
+        return history
 
     def _get_llm(self, provider):
         if provider == "fake":
@@ -147,15 +187,34 @@ class AuditAgent:
         """Performs a single AI call for all accounts that traded in the last window."""
         active_provider = os.getenv("LLM_PROVIDER", "unknown")
         try:
-            active_accounts = self.redis.smembers("active_accounts_this_window")
+            active_accounts = list(self.redis.smembers("active_accounts_this_window"))
             if not active_accounts: return
 
             batch_data = ""
             for account in active_accounts:
+                # 1. Start with Redis Cache (Real-time window)
                 history_key = f"history:{account}"
-                history_list = self.redis.lrange(history_key, 0, -1)
+                redis_history = self.redis.lrange(history_key, 0, -1)
+                
+                # 2. Rehydrate with PG history for the full 5-day window
+                db_history = self._get_history_from_db(account)
+                
+                # 3. Deduplicate and merge (DB is primary, Redis has newest)
+                # We use a simple set to deduplicate by ID if present
+                merged_history = []
+                seen_ids = set()
+                
+                for entry in db_history + redis_history:
+                    if "ID:" in entry:
+                        tid = entry.split("ID:")[1].strip()
+                        if tid not in seen_ids:
+                            merged_history.append(entry)
+                            seen_ids.add(tid)
+                    else:
+                        merged_history.append(entry)
+
                 batch_data += f"\nACCOUNT: {account}\n"
-                batch_data += "\n".join([f"- {item}" for item in history_list])
+                batch_data += "\n".join([f"- {item}" for item in merged_history])
                 batch_data += "\n" + ("=" * 20)
 
             logger.info(f" [GLOBAL AUDIT] Window closed. Analyzing {len(active_accounts)} accounts in ONE call...")
@@ -182,7 +241,8 @@ class AuditAgent:
                     notification_event = {
                         "event_type": "BATCH_PDT_ALERT",
                         "flagged_accounts": flagged_list,
-                        "total_audited_count": len(active_accounts), # Explicitly pass total
+                        "audited_accounts": active_accounts, # Pass full list for purging
+                        "total_audited_count": len(active_accounts),
                         "provider": active_provider,
                         "timestamp": datetime.now().isoformat()
                     }
@@ -196,6 +256,7 @@ class AuditAgent:
                 notification_event = {
                     "event_type": "BATCH_PDT_ALERT",
                     "flagged_accounts": [{"account": "SYSTEM", "decision": "ERROR", "reason": str(e)[:100]}],
+                    "audited_accounts": active_accounts,
                     "provider": f"ERROR ({active_provider})",
                     "timestamp": datetime.now().isoformat()
                 }

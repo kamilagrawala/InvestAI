@@ -87,13 +87,19 @@ class EmailChannel(NotificationChannel):
             server.send_message(msg)
             server.quit()
             logger.info(f" [v] Global Summary Email sent successfully.")
+            return True
         except Exception as e:
             logger.error(f" [x] Failed to send email: {e}")
+            return False
 
 class NotificationAgent:
     def __init__(self):
         self.channels = [LogChannel()]
         
+        # Redis setup for purging
+        redis_host = os.getenv("REDIS_HOST", "localhost")
+        self.redis = redis.Redis(host=redis_host, port=6379, db=0, decode_responses=True)
+
         email_user = os.getenv("EMAIL_USER")
         email_pass_enc = os.getenv("EMAIL_PASS")
         if email_user and email_pass_enc:
@@ -104,18 +110,39 @@ class NotificationAgent:
             except Exception as e:
                 logger.error(f"Failed to initialize email channel: {e}")
 
+    def _purge_cache(self, event):
+        """Purges history from Redis for accounts that were audited."""
+        accounts = event.get('audited_accounts', [])
+        for account in accounts:
+            history_key = f"history:{account}"
+            self.redis.delete(history_key)
+        logger.info(f" [CACHE] Purged Redis history for {len(accounts)} audited accounts.")
+
     def dispatch(self, event):
         # [DEBUG]
         received_provider = event.get('provider', 'unknown')
         print(f"\n[DEBUG NOTIFY] RECEIVED EVENT FROM PROVIDER: {received_provider}\n", flush=True)
 
-        # Now we just dispatch whatever batch we get. 
-        # Throttling is handled by the Audit Agent's global window.
+        # Track email success specifically as per requirements
+        email_status = None # None means no email channel, True/False means success/failure
+        
         for channel in self.channels:
             try:
-                channel.send(event)
+                res = channel.send(event)
+                if isinstance(channel, EmailChannel):
+                    email_status = res
             except Exception as e:
                 logger.error(f"Failed to send notification via {channel.__class__.__name__}: {e}")
+
+        # Requirement: Purge only if email was successfully sent
+        if email_status is True:
+            self._purge_cache(event)
+        elif email_status is False:
+            logger.warning(" [CACHE] Email failed, keeping history in Redis.")
+        elif email_status is None:
+            # If no email channel was successfully initialized, we do not purge.
+            # This ensures data is kept until an email can be sent.
+            logger.info(" [CACHE] No active email channel, keeping history in Redis.")
 
     def start(self):
         rabbitmq_host = os.getenv('RABBITMQ_HOST', 'localhost')
